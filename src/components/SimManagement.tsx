@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Radio, Plus, Signal } from "lucide-react";
 import { toast } from "sonner";
+import { Device } from '@capacitor/device';
 
 interface Sim {
   id: string;
@@ -19,14 +20,29 @@ interface Sim {
 }
 
 export const SimManagement = () => {
-  const [sims, setSims] = useState<Sim[]>([
-    { id: "1", number: "+1234567890", carrier: "Carrier A", device: "Device-01", status: "active", balance: "$25.50" },
-    { id: "2", number: "+1234567891", carrier: "Carrier B", device: "Device-01", status: "active", balance: "$18.20" },
-    { id: "3", number: "+1234567892", carrier: "Carrier A", device: "Device-02", status: "inactive", balance: "$5.00" },
-  ]);
-
+  const [sims, setSims] = useState<Sim[]>([]);
   const [newSim, setNewSim] = useState({ number: "", carrier: "", device: "" });
   const [open, setOpen] = useState(false);
+  const [deviceName, setDeviceName] = useState("");
+
+  useEffect(() => {
+    const detectSIMCards = async () => {
+      try {
+        const info = await Device.getInfo();
+        const deviceId = await Device.getId();
+        const name = info.name || `${info.manufacturer} Device`;
+        setDeviceName(name);
+
+        // Note: Direct SIM access requires native plugins or permissions
+        // For now, we'll show a message about detected device
+        toast.info(`Device detected: ${name}. Add SIM cards manually with permissions.`);
+      } catch (error) {
+        console.error("Error detecting SIM cards:", error);
+      }
+    };
+
+    detectSIMCards();
+  }, []);
 
   const addSim = () => {
     if (!newSim.number || !newSim.carrier || !newSim.device) {

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Label } from "@/components/ui/label";
 import { Smartphone, Plus, Signal, Battery, Wifi, Radio } from "lucide-react";
 import { toast } from "sonner";
+import { Device as CapacitorDevice } from '@capacitor/device';
 
 interface Device {
   id: string;
@@ -19,14 +20,37 @@ interface Device {
 }
 
 export const DeviceManagement = () => {
-  const [devices, setDevices] = useState<Device[]>([
-    { id: "1", name: "Device-01", model: "Samsung A54", status: "online", simCount: 3, battery: 85, signal: 4 },
-    { id: "2", name: "Device-02", model: "iPhone 13", status: "online", simCount: 2, battery: 62, signal: 5 },
-    { id: "3", name: "Device-03", model: "Pixel 7", status: "offline", simCount: 4, battery: 20, signal: 0 },
-  ]);
-
+  const [devices, setDevices] = useState<Device[]>([]);
   const [newDevice, setNewDevice] = useState({ name: "", model: "" });
   const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    const detectCurrentDevice = async () => {
+      try {
+        const info = await CapacitorDevice.getInfo();
+        const batteryInfo = await CapacitorDevice.getBatteryInfo();
+        const id = await CapacitorDevice.getId();
+
+        const currentDevice: Device = {
+          id: id.identifier,
+          name: info.name || `${info.manufacturer} Device`,
+          model: `${info.manufacturer} ${info.model}`,
+          status: "online",
+          simCount: 0,
+          battery: Math.round((batteryInfo.batteryLevel || 0) * 100),
+          signal: 4,
+        };
+
+        setDevices([currentDevice]);
+        toast.success("Current device detected!");
+      } catch (error) {
+        console.error("Error detecting device:", error);
+        toast.error("Could not detect device info");
+      }
+    };
+
+    detectCurrentDevice();
+  }, []);
 
   const addDevice = () => {
     if (!newDevice.name || !newDevice.model) {
