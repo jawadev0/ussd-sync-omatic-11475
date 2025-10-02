@@ -1,165 +1,44 @@
-import { useState, useEffect } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Radio, Plus, Signal } from "lucide-react";
-import { toast } from "sonner";
-import { Device } from '@capacitor/device';
-
-type Operator = "INWI" | "ORANGE" | "IAM";
+import { Radio } from "lucide-react";
+import { supabase } from "@/integrations/supabase/client";
+import { useQuery } from "@tanstack/react-query";
 
 interface Sim {
   id: string;
-  number: string;
-  carrier: Operator;
-  device: string;
-  status: "active" | "inactive";
-  balance: string;
-  dailyQuota: number; // 20 USSD per day
-  usedToday: number;
-  lastResetDate: string;
+  device_id: string;
+  phone_number: string;
+  carrier: string;
+  daily_quota: number;
+  used_today: number;
+  device_name?: string;
 }
 
 export const SimManagement = () => {
-  const [sims, setSims] = useState<Sim[]>([]);
-  const [newSim, setNewSim] = useState({ number: "", carrier: "", device: "" });
-  const [open, setOpen] = useState(false);
-  const [deviceName, setDeviceName] = useState("");
-
-  useEffect(() => {
-    const detectAndGenerateSIMs = async () => {
-      try {
-        const info = await Device.getInfo();
-        const deviceId = await Device.getId();
-        const name = info.name || `${info.manufacturer} Device`;
-        setDeviceName(name);
-
-        // Auto-generate 2 SIM cards per device with operators
-        const operators: Operator[] = ["INWI", "ORANGE", "IAM"];
-        const today = new Date().toISOString().split('T')[0];
-        
-        const generatedSims: Sim[] = [
-          {
-            id: `${deviceId.identifier}-sim1`,
-            number: `+212${Math.floor(600000000 + Math.random() * 99999999)}`,
-            carrier: operators[Math.floor(Math.random() * operators.length)],
-            device: name,
-            status: "active",
-            balance: "$25.00",
-            dailyQuota: 20,
-            usedToday: 0,
-            lastResetDate: today,
-          },
-          {
-            id: `${deviceId.identifier}-sim2`,
-            number: `+212${Math.floor(600000000 + Math.random() * 99999999)}`,
-            carrier: operators[Math.floor(Math.random() * operators.length)],
-            device: name,
-            status: "active",
-            balance: "$25.00",
-            dailyQuota: 20,
-            usedToday: 0,
-            lastResetDate: today,
-          },
-        ];
-
-        setSims(generatedSims);
-        toast.success(`Device detected with 2 SIM cards auto-generated!`);
-      } catch (error) {
-        console.error("Error detecting device:", error);
-        toast.error("Could not auto-detect device");
-      }
-    };
-
-    detectAndGenerateSIMs();
-  }, []);
-
-  const addSim = () => {
-    if (!newSim.number || !newSim.carrier || !newSim.device) {
-      toast.error("Please fill in all fields");
-      return;
+  const { data: sims = [] } = useQuery({
+    queryKey: ['sims'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('sims')
+        .select(`
+          *,
+          devices!inner(name)
+        `)
+        .order('created_at', { ascending: false });
+      
+      if (error) throw error;
+      return data.map(sim => ({
+        ...sim,
+        device_name: sim.devices.name
+      })) as Sim[];
     }
-
-    const today = new Date().toISOString().split('T')[0];
-    const sim: Sim = {
-      id: Date.now().toString(),
-      number: newSim.number,
-      carrier: newSim.carrier as Operator,
-      device: newSim.device,
-      status: "active",
-      balance: "$0.00",
-      dailyQuota: 20,
-      usedToday: 0,
-      lastResetDate: today,
-    };
-
-    setSims([...sims, sim]);
-    setNewSim({ number: "", carrier: "", device: "" });
-    setOpen(false);
-    toast.success("SIM card added successfully");
-  };
+  });
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold">SIM Card Management</h2>
-        <Dialog open={open} onOpenChange={setOpen}>
-          <DialogTrigger asChild>
-            <Button className="gap-2 gradient-primary">
-              <Plus className="w-4 h-4" />
-              Add SIM
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="glass">
-            <DialogHeader>
-              <DialogTitle>Add New SIM Card</DialogTitle>
-            </DialogHeader>
-            <div className="space-y-4 mt-4">
-              <div className="space-y-2">
-                <Label htmlFor="sim-number">Phone Number</Label>
-                <Input
-                  id="sim-number"
-                  placeholder="+1234567890"
-                  value={newSim.number}
-                  onChange={(e) => setNewSim({ ...newSim, number: e.target.value })}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="sim-carrier">Carrier</Label>
-                <Select value={newSim.carrier} onValueChange={(value) => setNewSim({ ...newSim, carrier: value })}>
-                  <SelectTrigger id="sim-carrier">
-                    <SelectValue placeholder="Select operator" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="INWI">INWI</SelectItem>
-                    <SelectItem value="ORANGE">ORANGE</SelectItem>
-                    <SelectItem value="IAM">IAM</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="sim-device">Assign to Device</Label>
-                <Select value={newSim.device} onValueChange={(value) => setNewSim({ ...newSim, device: value })}>
-                  <SelectTrigger id="sim-device">
-                    <SelectValue placeholder="Select device" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="Device-01">Device-01</SelectItem>
-                    <SelectItem value="Device-02">Device-02</SelectItem>
-                    <SelectItem value="Device-03">Device-03</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <Button onClick={addSim} className="w-full gradient-primary">
-                Add SIM Card
-              </Button>
-            </div>
-          </DialogContent>
-        </Dialog>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -171,37 +50,26 @@ export const SimManagement = () => {
                   <Radio className="w-6 h-6" />
                 </div>
                 <div>
-                  <h3 className="font-semibold font-mono text-sm">{sim.number}</h3>
+                  <h3 className="font-semibold font-mono text-sm">{sim.phone_number}</h3>
                   <p className="text-sm text-muted-foreground">{sim.carrier}</p>
                 </div>
               </div>
-              <Badge variant={sim.status === "active" ? "default" : "secondary"} className={sim.status === "active" ? "bg-success" : ""}>
-                {sim.status}
+              <Badge variant="default" className="bg-success">
+                active
               </Badge>
             </div>
 
             <div className="space-y-2">
               <div className="flex items-center justify-between text-sm">
                 <span className="text-muted-foreground">Device</span>
-                <span className="font-medium">{sim.device}</span>
-              </div>
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">Balance</span>
-                <span className="font-medium text-primary">{sim.balance}</span>
+                <span className="font-medium">{sim.device_name}</span>
               </div>
               <div className="flex items-center justify-between text-sm">
                 <span className="text-muted-foreground">Daily Quota</span>
-                <span className="font-medium">{sim.usedToday}/{sim.dailyQuota}</span>
+                <Badge variant={sim.used_today >= sim.daily_quota ? "destructive" : "default"}>
+                  {sim.used_today}/{sim.daily_quota}
+                </Badge>
               </div>
-            </div>
-
-            <div className="flex gap-2">
-              <Button variant="outline" size="sm" className="flex-1">
-                Details
-              </Button>
-              <Button variant="outline" size="sm" className="flex-1">
-                Check Balance
-              </Button>
             </div>
           </Card>
         ))}

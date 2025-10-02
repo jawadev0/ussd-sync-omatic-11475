@@ -5,73 +5,126 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
-import { Smartphone, Plus, Signal, Battery, Wifi, Radio } from "lucide-react";
+import { Smartphone, Plus, Signal, Battery, Radio } from "lucide-react";
 import { toast } from "sonner";
 import { Device as CapacitorDevice } from '@capacitor/device';
+import { supabase } from "@/integrations/supabase/client";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 interface Device {
   id: string;
   name: string;
-  model: string;
-  status: "online" | "offline";
-  simCount: number;
-  battery: number;
-  signal: number;
+  status: string;
+  last_seen: string | null;
+  sim_count: number;
+  battery?: number;
+  signal?: number;
 }
 
 export const DeviceManagement = () => {
-  const [devices, setDevices] = useState<Device[]>([]);
-  const [newDevice, setNewDevice] = useState({ name: "", model: "" });
+  const [newDevice, setNewDevice] = useState({ name: "" });
   const [open, setOpen] = useState(false);
+  const queryClient = useQueryClient();
+
+  const { data: devices = [] } = useQuery({
+    queryKey: ['devices'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('devices')
+        .select('*')
+        .order('created_at', { ascending: false });
+      
+      if (error) throw error;
+      return data as Device[];
+    }
+  });
+
+  const addDeviceMutation = useMutation({
+    mutationFn: async (deviceData: { name: string; status: string; sim_count: number }) => {
+      const { data, error } = await supabase
+        .from('devices')
+        .insert([deviceData])
+        .select()
+        .single();
+      
+      if (error) throw error;
+      
+      // Auto-generate 2 SIM cards for this device
+      const operators: ('INWI' | 'ORANGE' | 'IAM')[] = ['INWI', 'ORANGE', 'IAM'];
+      const simsToInsert = Array.from({ length: 2 }, (_, i) => ({
+        device_id: data.id,
+        phone_number: `+212${Math.floor(600000000 + Math.random() * 99999999)}`,
+        carrier: operators[Math.floor(Math.random() * operators.length)]
+      }));
+      
+      const { error: simsError } = await supabase
+        .from('sims')
+        .insert(simsToInsert);
+      
+      if (simsError) throw simsError;
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['devices'] });
+      queryClient.invalidateQueries({ queryKey: ['sims'] });
+      toast.success("Device and SIM cards added successfully");
+    },
+    onError: (error) => {
+      toast.error(`Failed to add device: ${error.message}`);
+    }
+  });
 
   useEffect(() => {
-    const detectCurrentDevice = async () => {
+    const detectAndAddCurrentDevice = async () => {
       try {
         const info = await CapacitorDevice.getInfo();
-        const batteryInfo = await CapacitorDevice.getBatteryInfo();
-        const id = await CapacitorDevice.getId();
+        const deviceId = await CapacitorDevice.getId();
+        const name = info.name || `${info.manufacturer} Device`;
 
-        const currentDevice: Device = {
-          id: id.identifier,
-          name: info.name || `${info.manufacturer} Device`,
-          model: `${info.manufacturer} ${info.model}`,
-          status: "online",
-          simCount: 2, // Every device has 2 SIM cards
-          battery: Math.round((batteryInfo.batteryLevel || 0) * 100),
-          signal: 4,
-        };
+        // Check if device already exists
+        const { data: existingDevice } = await supabase
+          .from('devices')
+          .select('id')
+          .eq('id', deviceId.identifier)
+          .maybeSingle();
 
-        setDevices([currentDevice]);
-        toast.success("Current device detected!");
+        if (!existingDevice) {
+          // Add device to database
+          await addDeviceMutation.mutateAsync({
+            name,
+            status: 'online',
+            sim_count: 2
+          });
+          toast.success("Current device detected and added!");
+        } else {
+          // Update last_seen
+          await supabase
+            .from('devices')
+            .update({ last_seen: new Date().toISOString(), status: 'online' })
+            .eq('id', deviceId.identifier);
+        }
       } catch (error) {
         console.error("Error detecting device:", error);
-        toast.error("Could not detect device info");
       }
     };
 
-    detectCurrentDevice();
+    detectAndAddCurrentDevice();
   }, []);
 
   const addDevice = () => {
-    if (!newDevice.name || !newDevice.model) {
-      toast.error("Please fill in all fields");
+    if (!newDevice.name) {
+      toast.error("Please enter device name");
       return;
     }
 
-    const device: Device = {
-      id: Date.now().toString(),
+    addDeviceMutation.mutate({
       name: newDevice.name,
-      model: newDevice.model,
-      status: "offline",
-      simCount: 2, // Every device has 2 SIM cards
-      battery: 100,
-      signal: 0,
-    };
-
-    setDevices([...devices, device]);
-    setNewDevice({ name: "", model: "" });
+      status: 'offline',
+      sim_count: 2
+    });
+    
+    setNewDevice({ name: "" });
     setOpen(false);
-    toast.success("Device added successfully");
   };
 
   return (
@@ -99,17 +152,8 @@ export const DeviceManagement = () => {
                   onChange={(e) => setNewDevice({ ...newDevice, name: e.target.value })}
                 />
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="device-model">Model</Label>
-                <Input
-                  id="device-model"
-                  placeholder="e.g., Samsung Galaxy S23"
-                  value={newDevice.model}
-                  onChange={(e) => setNewDevice({ ...newDevice, model: e.target.value })}
-                />
-              </div>
               <Button onClick={addDevice} className="w-full gradient-primary">
-                Add Device
+                Add Device (with 2 SIM cards)
               </Button>
             </div>
           </DialogContent>
@@ -126,7 +170,7 @@ export const DeviceManagement = () => {
                 </div>
                 <div>
                   <h3 className="font-semibold">{device.name}</h3>
-                  <p className="text-sm text-muted-foreground">{device.model}</p>
+                  <p className="text-sm text-muted-foreground">ID: {device.id.slice(0, 8)}</p>
                 </div>
               </div>
               <Badge variant={device.status === "online" ? "default" : "secondary"} className={device.status === "online" ? "bg-success" : ""}>
@@ -140,14 +184,14 @@ export const DeviceManagement = () => {
                   <Radio className="w-4 h-4" />
                   SIM Cards
                 </span>
-                <span className="font-medium">{device.simCount}</span>
+                <span className="font-medium">{device.sim_count}</span>
               </div>
               <div className="flex items-center justify-between text-sm">
                 <span className="text-muted-foreground flex items-center gap-2">
                   <Battery className="w-4 h-4" />
                   Battery
                 </span>
-                <span className="font-medium">{device.battery}%</span>
+                <span className="font-medium">{device.battery || 100}%</span>
               </div>
               <div className="flex items-center justify-between text-sm">
                 <span className="text-muted-foreground flex items-center gap-2">
@@ -159,7 +203,7 @@ export const DeviceManagement = () => {
                     <div
                       key={i}
                       className={`w-1 h-3 rounded-full ${
-                        i < device.signal ? "bg-success" : "bg-muted"
+                        i < (device.signal || 4) ? "bg-success" : "bg-muted"
                       }`}
                     />
                   ))}

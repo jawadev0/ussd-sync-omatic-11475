@@ -7,173 +7,229 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { Play, Clock, Zap, CheckCircle2, Loader2, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
+import { supabase } from "@/integrations/supabase/client";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 type UssdType = "ACTIVATION" | "CHECK" | "TOPUP";
 type Operator = "INWI" | "ORANGE" | "IAM";
 
 interface Sim {
   id: string;
-  number: string;
+  device_id: string;
+  phone_number: string;
   carrier: Operator;
-  device: string;
-  usedToday: number;
-  dailyQuota: number;
+  used_today: number;
+  daily_quota: number;
+  device_name?: string;
+}
+
+interface Device {
+  id: string;
+  name: string;
 }
 
 interface UssdCommand {
-  id: string;
+  id: number;
   code: string;
   type: UssdType;
   operator: Operator;
-  device: string;
-  sim: string;
+  device_id: string;
+  sim_id: string;
   status: "pending" | "executing" | "success" | "failed" | "quota_exceeded";
-  timestamp: string;
-  autoExecuted: boolean;
+  auto_executed: boolean;
+  result: string | null;
+  executed_at: string | null;
+  created_at: string;
 }
 
 export const UssdAutomation = () => {
+  const queryClient = useQueryClient();
   const [command, setCommand] = useState({
     code: "",
     type: "ACTIVATION" as UssdType,
     operator: "INWI" as Operator,
-    device: "",
-    sim: "",
+    device_id: "",
+    sim_id: "",
   });
-
-  const [sims, setSims] = useState<Sim[]>([
-    { id: "sim1", number: "+212600000001", carrier: "INWI", device: "Device-01", usedToday: 5, dailyQuota: 20 },
-    { id: "sim2", number: "+212600000002", carrier: "ORANGE", device: "Device-01", usedToday: 18, dailyQuota: 20 },
-    { id: "sim3", number: "+212600000003", carrier: "IAM", device: "Device-02", usedToday: 20, dailyQuota: 20 },
-    { id: "sim4", number: "+212600000004", carrier: "INWI", device: "Device-02", usedToday: 2, dailyQuota: 20 },
-  ]);
-
-  const [commands, setCommands] = useState<UssdCommand[]>([]);
   const [autoExecutionEnabled, setAutoExecutionEnabled] = useState(true);
 
-  // Auto-execute when SIM operator matches USSD operator and hasn't exhausted quota
+  // Fetch devices
+  const { data: devices = [] } = useQuery({
+    queryKey: ['devices'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('devices')
+        .select('id, name');
+      if (error) throw error;
+      return data as Device[];
+    }
+  });
+
+  // Fetch SIMs with device info
+  const { data: sims = [] } = useQuery({
+    queryKey: ['sims'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('sims')
+        .select(`
+          *,
+          devices!inner(name)
+        `);
+      if (error) throw error;
+      return data.map(sim => ({
+        ...sim,
+        carrier: sim.carrier as Operator,
+        device_name: sim.devices.name
+      })) as Sim[];
+    },
+    refetchInterval: 3000 // Refetch every 3 seconds
+  });
+
+  // Fetch commands ordered by ID ASC
+  const { data: commands = [] } = useQuery({
+    queryKey: ['ussd_commands'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('ussd_commands')
+        .select('*')
+        .order('id', { ascending: true });
+      if (error) throw error;
+      return data.map(cmd => ({
+        ...cmd,
+        type: cmd.type as UssdType,
+        operator: cmd.operator as Operator,
+        status: cmd.status as UssdCommand['status']
+      })) as UssdCommand[];
+    },
+    refetchInterval: 2000 // Refetch every 2 seconds
+  });
+
+  // Add command mutation
+  const addCommandMutation = useMutation({
+    mutationFn: async (commandData: any) => {
+      const { data, error } = await supabase
+        .from('ussd_commands')
+        .insert([commandData])
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['ussd_commands'] });
+      toast.success("Command added to queue");
+    },
+    onError: (error: any) => {
+      toast.error(`Failed to add command: ${error.message}`);
+    }
+  });
+
+  // Execute command mutation
+  const executeCommandMutation = useMutation({
+    mutationFn: async ({ commandId, isAuto }: { commandId: number; isAuto: boolean }) => {
+      // Update to executing
+      await supabase
+        .from('ussd_commands')
+        .update({ 
+          status: 'executing',
+          auto_executed: isAuto
+        })
+        .eq('id', commandId);
+
+      // Simulate execution
+      await new Promise(resolve => setTimeout(resolve, 2000));
+
+      // Get command and sim details
+      const { data: cmd } = await supabase
+        .from('ussd_commands')
+        .select('*, sims(*)')
+        .eq('id', commandId)
+        .single();
+
+      if (!cmd) throw new Error('Command not found');
+
+      // Update command to success
+      await supabase
+        .from('ussd_commands')
+        .update({ 
+          status: 'success',
+          executed_at: new Date().toISOString(),
+          result: `Successfully executed ${cmd.code}`
+        })
+        .eq('id', commandId);
+
+      // Increment SIM usage
+      await supabase
+        .from('sims')
+        .update({ used_today: (cmd.sims.used_today || 0) + 1 })
+        .eq('id', cmd.sim_id);
+
+      return cmd;
+    },
+    onSuccess: (cmd) => {
+      queryClient.invalidateQueries({ queryKey: ['ussd_commands'] });
+      queryClient.invalidateQueries({ queryKey: ['sims'] });
+      toast.success(`${cmd.type} ${cmd.code} executed successfully`);
+    },
+    onError: (error: any) => {
+      toast.error(`Execution failed: ${error.message}`);
+    }
+  });
+
+  // Auto-execute pending commands
   useEffect(() => {
-    if (!autoExecutionEnabled) return;
+    if (!autoExecutionEnabled || !sims.length || !commands.length) return;
 
-    const autoExecute = () => {
-      sims.forEach((sim) => {
-        // Check if SIM can execute (hasn't exhausted quota)
-        if (sim.usedToday >= sim.dailyQuota) return;
+    const autoExecute = async () => {
+      // Get first pending command (ordered by ID ASC)
+      const pendingCmd = commands.find(cmd => cmd.status === 'pending');
+      if (!pendingCmd) return;
 
-        // Find pending commands matching this SIM's operator
-        const matchingCommands = commands.filter(
-          (cmd) =>
-            cmd.status === "pending" &&
-            cmd.operator === sim.carrier &&
-            cmd.sim === sim.id
-        );
+      // Find matching SIM
+      const matchingSim = sims.find(
+        sim => 
+          sim.id === pendingCmd.sim_id &&
+          sim.carrier === pendingCmd.operator &&
+          sim.used_today < sim.daily_quota
+      );
 
-        matchingCommands.forEach((cmd) => {
-          executeCommand(cmd.id, true);
+      if (matchingSim) {
+        executeCommandMutation.mutate({ 
+          commandId: pendingCmd.id, 
+          isAuto: true 
         });
-      });
+      }
     };
 
-    const interval = setInterval(autoExecute, 3000); // Check every 3 seconds
+    const interval = setInterval(autoExecute, 3000);
     return () => clearInterval(interval);
   }, [sims, commands, autoExecutionEnabled]);
 
-  const executeCommand = async (commandId: string, isAuto: boolean = false) => {
-    const cmd = commands.find((c) => c.id === commandId);
-    if (!cmd) return;
-
-    const sim = sims.find((s) => s.id === cmd.sim);
-    if (!sim) {
-      toast.error("SIM card not found");
-      return;
-    }
-
-    // Check quota
-    if (sim.usedToday >= sim.dailyQuota) {
-      setCommands((prev) =>
-        prev.map((c) =>
-          c.id === commandId
-            ? { ...c, status: "quota_exceeded" as const }
-            : c
-        )
-      );
-      toast.error(`${sim.number} has exhausted daily quota (${sim.dailyQuota})`);
-      return;
-    }
-
-    // Check operator match
-    if (sim.carrier !== cmd.operator) {
-      toast.error(`SIM operator (${sim.carrier}) doesn't match USSD operator (${cmd.operator})`);
-      return;
-    }
-
-    // Update command to executing
-    setCommands((prev) =>
-      prev.map((c) =>
-        c.id === commandId
-          ? { ...c, status: "executing" as const, autoExecuted: isAuto }
-          : c
-      )
-    );
-
-    if (isAuto) {
-      toast.info(`Auto-executing ${cmd.code} on ${sim.number} (${sim.carrier})`);
-    }
-
-    // Simulate execution
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-
-    // Update command to success and increment SIM usage
-    setCommands((prev) =>
-      prev.map((c) =>
-        c.id === commandId ? { ...c, status: "success" as const } : c
-      )
-    );
-
-    setSims((prev) =>
-      prev.map((s) =>
-        s.id === sim.id ? { ...s, usedToday: s.usedToday + 1 } : s
-      )
-    );
-
-    toast.success(
-      `${cmd.type} ${cmd.code} executed on ${sim.number} (${sim.usedToday + 1}/${sim.dailyQuota})`
-    );
+  const executeCommand = (commandId: number) => {
+    executeCommandMutation.mutate({ commandId, isAuto: false });
   };
 
   const addCommand = () => {
-    if (!command.code || !command.device || !command.sim) {
+    if (!command.code || !command.device_id || !command.sim_id) {
       toast.error("Please fill in all fields");
       return;
     }
 
-    const newCommand: UssdCommand = {
-      id: Date.now().toString(),
+    addCommandMutation.mutate({
       code: command.code,
       type: command.type,
       operator: command.operator,
-      device: command.device,
-      sim: command.sim,
-      status: "pending",
-      timestamp: new Date().toISOString(),
-      autoExecuted: false,
-    };
-
-    setCommands([...commands, newCommand]);
-
-    const sim = sims.find((s) => s.id === command.sim);
-    if (sim?.carrier === command.operator && sim.usedToday < sim.dailyQuota) {
-      toast.success("Command added and will auto-execute");
-    } else {
-      toast.info("Command added to queue");
-    }
+      device_id: command.device_id,
+      sim_id: command.sim_id,
+      status: 'pending'
+    });
 
     setCommand({
       code: "",
       type: "ACTIVATION",
       operator: "INWI",
-      device: "",
-      sim: "",
+      device_id: "",
+      sim_id: "",
     });
   };
 
@@ -205,8 +261,8 @@ export const UssdAutomation = () => {
         <Card className="glass p-4">
           <div className="text-sm text-muted-foreground">Today's Executions</div>
           <div className="text-2xl font-bold">
-            {sims.reduce((acc, sim) => acc + sim.usedToday, 0)}/
-            {sims.reduce((acc, sim) => acc + sim.dailyQuota, 0)}
+            {sims.reduce((acc, sim) => acc + sim.used_today, 0)}/
+            {sims.reduce((acc, sim) => acc + sim.daily_quota, 0)}
           </div>
         </Card>
         <Card className="glass p-4">
@@ -292,15 +348,18 @@ export const UssdAutomation = () => {
           <div className="space-y-2">
             <Label htmlFor="device-select">Target Device</Label>
             <Select
-              value={command.device}
-              onValueChange={(value) => setCommand({ ...command, device: value })}
+              value={command.device_id}
+              onValueChange={(value) => setCommand({ ...command, device_id: value, sim_id: "" })}
             >
               <SelectTrigger id="device-select">
                 <SelectValue placeholder="Select device" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="Device-01">Device-01</SelectItem>
-                <SelectItem value="Device-02">Device-02</SelectItem>
+                {devices.map((device) => (
+                  <SelectItem key={device.id} value={device.id}>
+                    {device.name}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
@@ -308,18 +367,19 @@ export const UssdAutomation = () => {
           <div className="space-y-2">
             <Label htmlFor="sim-select">SIM Card</Label>
             <Select
-              value={command.sim}
-              onValueChange={(value) => setCommand({ ...command, sim: value })}
+              value={command.sim_id}
+              onValueChange={(value) => setCommand({ ...command, sim_id: value })}
+              disabled={!command.device_id}
             >
               <SelectTrigger id="sim-select">
                 <SelectValue placeholder="Select SIM" />
               </SelectTrigger>
               <SelectContent>
                 {sims
-                  .filter((sim) => sim.device === command.device)
+                  .filter((sim) => sim.device_id === command.device_id)
                   .map((sim) => (
                     <SelectItem key={sim.id} value={sim.id}>
-                      {sim.number} ({sim.carrier}) - {sim.usedToday}/{sim.dailyQuota}
+                      {sim.phone_number} ({sim.carrier}) - {sim.used_today}/{sim.daily_quota}
                     </SelectItem>
                   ))}
               </SelectContent>
@@ -343,18 +403,18 @@ export const UssdAutomation = () => {
               className="flex items-center justify-between p-4 rounded-lg bg-muted/30"
             >
               <div>
-                <div className="font-medium">{sim.number}</div>
+                <div className="font-medium">{sim.phone_number}</div>
                 <div className="text-sm text-muted-foreground">
-                  {sim.device} • {sim.carrier}
+                  {sim.device_name} • {sim.carrier}
                 </div>
               </div>
               <div className="text-right">
                 <Badge
-                  variant={sim.usedToday >= sim.dailyQuota ? "destructive" : "default"}
+                  variant={sim.used_today >= sim.daily_quota ? "destructive" : "default"}
                 >
-                  {sim.usedToday}/{sim.dailyQuota}
+                  {sim.used_today}/{sim.daily_quota}
                 </Badge>
-                {sim.usedToday >= sim.dailyQuota && (
+                {sim.used_today >= sim.daily_quota && (
                   <div className="text-xs text-destructive mt-1">Quota Full</div>
                 )}
               </div>
@@ -369,7 +429,8 @@ export const UssdAutomation = () => {
           <h3 className="text-xl font-semibold">Commands Queue</h3>
           <div className="space-y-3">
             {commands.map((cmd) => {
-              const sim = sims.find((s) => s.id === cmd.sim);
+              const sim = sims.find((s) => s.id === cmd.sim_id);
+              const device = devices.find((d) => d.id === cmd.device_id);
               const statusInfo = getStatusBadge(cmd.status);
               
               return (
@@ -401,8 +462,8 @@ export const UssdAutomation = () => {
                         <Badge>{cmd.operator}</Badge>
                       </div>
                       <div className="text-sm text-muted-foreground mt-1">
-                        {sim?.number} • {cmd.device}
-                        {cmd.autoExecuted && " • Auto-executed"}
+                        {sim?.phone_number} • {device?.name}
+                        {cmd.auto_executed && " • Auto-executed"}
                       </div>
                     </div>
                   </div>
@@ -412,7 +473,7 @@ export const UssdAutomation = () => {
                       <Button
                         size="sm"
                         variant="outline"
-                        onClick={() => executeCommand(cmd.id, false)}
+                        onClick={() => executeCommand(cmd.id)}
                       >
                         Execute Now
                       </Button>
