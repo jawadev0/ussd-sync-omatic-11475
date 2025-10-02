@@ -36,7 +36,7 @@ export const DeviceManagement = () => {
           name: info.name || `${info.manufacturer} Device`,
           model: `${info.manufacturer} ${info.model}`,
           status: "online",
-          simCount: 0,
+          simCount: 2, // Every device has 2 SIM cards
           battery: Math.round((batteryInfo.batteryLevel || 0) * 100),
           signal: 4,
         };
@@ -63,7 +63,7 @@ export const DeviceManagement = () => {
       name: newDevice.name,
       model: newDevice.model,
       status: "offline",
-      simCount: 0,
+      simCount: 2, // Every device has 2 SIM cards
       battery: 100,
       signal: 0,
     };

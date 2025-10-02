@@ -10,13 +10,18 @@ import { Radio, Plus, Signal } from "lucide-react";
 import { toast } from "sonner";
 import { Device } from '@capacitor/device';
 
+type Operator = "INWI" | "ORANGE" | "IAM";
+
 interface Sim {
   id: string;
   number: string;
-  carrier: string;
+  carrier: Operator;
   device: string;
   status: "active" | "inactive";
   balance: string;
+  dailyQuota: number; // 20 USSD per day
+  usedToday: number;
+  lastResetDate: string;
 }
 
 export const SimManagement = () => {
@@ -26,22 +31,51 @@ export const SimManagement = () => {
   const [deviceName, setDeviceName] = useState("");
 
   useEffect(() => {
-    const detectSIMCards = async () => {
+    const detectAndGenerateSIMs = async () => {
       try {
         const info = await Device.getInfo();
         const deviceId = await Device.getId();
         const name = info.name || `${info.manufacturer} Device`;
         setDeviceName(name);
 
-        // Note: Direct SIM access requires native plugins or permissions
-        // For now, we'll show a message about detected device
-        toast.info(`Device detected: ${name}. Add SIM cards manually with permissions.`);
+        // Auto-generate 2 SIM cards per device with operators
+        const operators: Operator[] = ["INWI", "ORANGE", "IAM"];
+        const today = new Date().toISOString().split('T')[0];
+        
+        const generatedSims: Sim[] = [
+          {
+            id: `${deviceId.identifier}-sim1`,
+            number: `+212${Math.floor(600000000 + Math.random() * 99999999)}`,
+            carrier: operators[Math.floor(Math.random() * operators.length)],
+            device: name,
+            status: "active",
+            balance: "$25.00",
+            dailyQuota: 20,
+            usedToday: 0,
+            lastResetDate: today,
+          },
+          {
+            id: `${deviceId.identifier}-sim2`,
+            number: `+212${Math.floor(600000000 + Math.random() * 99999999)}`,
+            carrier: operators[Math.floor(Math.random() * operators.length)],
+            device: name,
+            status: "active",
+            balance: "$25.00",
+            dailyQuota: 20,
+            usedToday: 0,
+            lastResetDate: today,
+          },
+        ];
+
+        setSims(generatedSims);
+        toast.success(`Device detected with 2 SIM cards auto-generated!`);
       } catch (error) {
-        console.error("Error detecting SIM cards:", error);
+        console.error("Error detecting device:", error);
+        toast.error("Could not auto-detect device");
       }
     };
 
-    detectSIMCards();
+    detectAndGenerateSIMs();
   }, []);
 
   const addSim = () => {
@@ -50,13 +84,17 @@ export const SimManagement = () => {
       return;
     }
 
+    const today = new Date().toISOString().split('T')[0];
     const sim: Sim = {
       id: Date.now().toString(),
       number: newSim.number,
-      carrier: newSim.carrier,
+      carrier: newSim.carrier as Operator,
       device: newSim.device,
-      status: "inactive",
+      status: "active",
       balance: "$0.00",
+      dailyQuota: 20,
+      usedToday: 0,
+      lastResetDate: today,
     };
 
     setSims([...sims, sim]);
@@ -92,12 +130,16 @@ export const SimManagement = () => {
               </div>
               <div className="space-y-2">
                 <Label htmlFor="sim-carrier">Carrier</Label>
-                <Input
-                  id="sim-carrier"
-                  placeholder="e.g., Carrier A"
-                  value={newSim.carrier}
-                  onChange={(e) => setNewSim({ ...newSim, carrier: e.target.value })}
-                />
+                <Select value={newSim.carrier} onValueChange={(value) => setNewSim({ ...newSim, carrier: value })}>
+                  <SelectTrigger id="sim-carrier">
+                    <SelectValue placeholder="Select operator" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="INWI">INWI</SelectItem>
+                    <SelectItem value="ORANGE">ORANGE</SelectItem>
+                    <SelectItem value="IAM">IAM</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="sim-device">Assign to Device</Label>
@@ -146,6 +188,10 @@ export const SimManagement = () => {
               <div className="flex items-center justify-between text-sm">
                 <span className="text-muted-foreground">Balance</span>
                 <span className="font-medium text-primary">{sim.balance}</span>
+              </div>
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-muted-foreground">Daily Quota</span>
+                <span className="font-medium">{sim.usedToday}/{sim.dailyQuota}</span>
               </div>
             </div>
 
